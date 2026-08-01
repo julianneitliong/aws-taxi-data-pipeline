@@ -38,3 +38,22 @@ Tomorrow: building the transformation layer. That means writing a Glue ETL job (
 
 **Stack:** AWS IAM · Amazon S3 · AWS Glue (Data Catalog, Crawlers) · Parquet
 **Skills demonstrated:** cloud account security & least-privilege IAM, data lake architecture, schema cataloging, columnar file formats
+
+## Day 2: Transformation Layer — Debugging a Real ETL Pipeline
+
+Today's goal was the transformation stage of the pipeline: a Glue ETL job that reads the cataloged raw taxi data, cleans it, and writes partitioned, analysis-ready Parquet to `processed/`. It ended up being less about writing the job and more about debugging it — which, it turns out, is most of what real data engineering work actually looks like.
+
+**The nested-timestamp trap.** Glue Studio's visual schema preview showed my pickup/dropoff timestamp columns as a nested "object" type, blocking the auto-create-catalog-table feature entirely — even though the underlying Parquet file stores them as real timestamps. Root cause: a known interop quirk in how certain Spark/Glue versions surface Parquet's microsecond timestamp encoding. Fixed with an explicit `CAST(... AS timestamp)`. Along the way I also learned the hard way that `SELECT * REPLACE (...)` is BigQuery/Snowflake syntax, not valid Spark SQL — an easy trap when you're used to a different SQL dialect.
+
+**Real, corrupted data.** My first successful run wrote a `pickup_date=2008-12-31` partition into a file that's supposed to be entirely May 2026 trips. NYC's public taxi dataset is known to contain a small number of rows with genuinely corrupted timestamps — a good reminder that "the pipeline ran successfully" and "the output is correct" are two different claims, and only one of them was true here.
+
+**Chasing a UI bug to its root.** Adding a date filter should have been simple, but the Filter transform's Key dropdown refused to recognize a column I could prove existed one node upstream — confirmed by checking each node's own output schema in isolation rather than trusting the graph at face value. After ruling out a broken node connection, a leftover catalog table with a conflicting schema, and a genuinely stale cache (none of which fully explained it), the real fix was pragmatic: move the filtering logic into the SQL Query node's `WHERE` clause instead of fighting the visual Filter node. Spark has zero problem filtering on an aliased or computed column — this was specifically a Glue Studio UI staleness issue, not a limitation of the underlying engine. Knowing when to drop from a visual/low-code tool down to explicit code is a real, professional skill, not a workaround to be embarrassed about.
+
+**Result:** `processed/` now contains exactly 31 clean partitions — one per day of May 2026, corrupted dates filtered out, catalog schema verified clean.
+
+**Key takeaways for next time:** the single best-leverage habit here would have been data profiling *before* building any transform logic — pulling a small local sample and checking schema against the source's published data dictionary and scanning min/max ranges would have caught the corrupted dates in seconds, for free, instead of discovering them after a full pipeline run. I also learned the real distinction between when to let a Glue crawler infer a schema versus defining it explicitly: it's not about dataset size, it's about whether the schema is already known and how wide/complex it is. Going forward, I'd reach for AWS Glue's Data Quality rules (declarative, auditable expectations) over ad hoc filter conditions for anything catching real data issues.
+
+---
+
+**Stack:** AWS Glue Studio · Spark SQL · Parquet · AWS Glue Data Catalog
+**Skills demonstrated:** root-cause debugging across a multi-stage pipeline, Spark SQL semantics, distinguishing engine limitations from tooling limitations, data quality awareness, schema design decisions (crawler vs. explicit definition)
